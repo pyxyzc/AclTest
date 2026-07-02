@@ -22,10 +22,6 @@
 #define ACL_RT_VMM_EXPORT_FLAG_DISABLE_PID_VALIDATION 0x1UL
 #endif
 
-#ifndef ACL_RT_MEM_ACCESS_FLAGS_READWRITE
-#define ACL_RT_MEM_ACCESS_FLAGS_READWRITE 0x3UL
-#endif
-
 #ifndef ACL_HBM_MEM_NORMAL
 #define ACL_HBM_MEM_NORMAL ACL_MEM_NORMAL
 #endif
@@ -36,6 +32,8 @@ constexpr uint32_t kPidMagic = 0x50494431U;
 constexpr uint32_t kShareMagic = 0x53485231U;
 constexpr uint32_t kResultMagic = 0x52534c54U;
 constexpr size_t kMaxSharedHandleBytes = 128;
+constexpr aclrtMemAccessFlags kAclMemAccessReadWrite =
+    static_cast<aclrtMemAccessFlags>(0x3UL);
 
 enum class ShareApi : uint32_t {
     V1 = 1,
@@ -395,7 +393,7 @@ struct PhysicalMapping {
         aclrtMemAccessDesc access = {};
         access.location.type = ACL_MEM_LOCATION_TYPE_DEVICE;
         access.location.id = device;
-        access.flags = ACL_RT_MEM_ACCESS_FLAGS_READWRITE;
+        access.flags = kAclMemAccessReadWrite;
         ret = aclrtMemSetAccess(virt, size, &access, 1);
         if (!LogAcl("aclrtMemSetAccess(READWRITE)", ret)) {
             return false;
@@ -463,7 +461,6 @@ bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
                                ? ACL_RT_VMM_EXPORT_FLAG_DISABLE_PID_VALIDATION
                                : ACL_RT_VMM_EXPORT_FLAG_DEFAULT;
 
-#if defined(ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT)
     if (!options.force_v1) {
         msg->api_version = static_cast<uint32_t>(ShareApi::V2);
         aclrtMemSharedHandleType share_type = ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT;
@@ -502,7 +499,6 @@ bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
         std::memcpy(msg->share, share_ptr, share_len);
         return true;
     }
-#endif
 
     if (options.share_kind == ShareKind::Fabric) {
         std::cerr << "  --share-type fabric requires V2 APIs\n";
@@ -532,7 +528,6 @@ bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
 bool ImportShareableHandle(const ShareMsg& msg, aclrtDrvMemHandle* handle)
 {
     if (msg.api_version == static_cast<uint32_t>(ShareApi::V2)) {
-#if defined(ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT)
         aclrtMemSharedHandleType share_type = ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT;
         void* share_ptr = nullptr;
         uint64_t default_handle = 0;
@@ -565,10 +560,6 @@ bool ImportShareableHandle(const ShareMsg& msg, aclrtDrvMemHandle* handle)
         const aclError ret = aclrtMemImportFromShareableHandleV2(
             share_ptr, share_type, 0, handle);
         return LogAcl("aclrtMemImportFromShareableHandleV2", ret);
-#else
-        std::cerr << "  received V2 handle, but this build lacks V2 definitions\n";
-        return false;
-#endif
     }
 
     uint64_t shareable_handle = 0;
@@ -831,11 +822,7 @@ int main(int argc, char** argv)
     std::cout << "  share_type="
               << (options.share_kind == ShareKind::Fabric ? "fabric" : "default") << "\n";
 
-#if defined(ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT)
     std::cout << "  build_has_v2_share_api=yes\n";
-#else
-    std::cout << "  build_has_v2_share_api=no\n";
-#endif
 
     uint32_t device_count = 0;
     {
