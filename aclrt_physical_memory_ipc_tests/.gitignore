@@ -1,0 +1,6 @@
+build/
+cmake-build-*/
+*.o
+*.so
+*.a
+physical_memory_ipc_probe
