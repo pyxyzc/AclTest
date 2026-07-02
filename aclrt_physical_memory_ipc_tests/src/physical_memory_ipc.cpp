@@ -365,6 +365,102 @@ void SendChildResult(int write_fd, bool ok, aclError ret, const std::string& mes
     (void)WriteFull(write_fd, &result, sizeof(result));
 }
 
+bool IsHostPhysicalConfig(const PhysicalMemoryConfig& config)
+{
+    return config.access_location.type == ACL_MEM_LOCATION_TYPE_HOST;
+}
+
+bool AllocateChildDeviceMapping(const ShareMsg& share_msg, PhysicalMapping* device)
+{
+    Options options;
+    options.device = share_msg.device;
+    options.requested_size = static_cast<size_t>(share_msg.test_size);
+
+    const auto device_config = MakeDeviceConfig(options);
+    size_t aligned_size = 0;
+    if (!QueryAlignedSize(device_config, options.requested_size, &aligned_size)) {
+        return false;
+    }
+    return AllocateAndMapPhysical(device_config, aligned_size, device);
+}
+
+bool RunImportedHostToDeviceProbe(const ShareMsg& share_msg,
+                                  const PhysicalMapping& host_mapping,
+                                  uint32_t expected_seed,
+                                  const std::string& label_prefix)
+{
+    std::cout << "  " << label_prefix
+              << " imported host VA -> device VA H2D probe\n";
+
+    Options options;
+    options.device = share_msg.device;
+    options.requested_size = static_cast<size_t>(share_msg.test_size);
+    const auto device_config = MakeDeviceConfig(options);
+
+    PhysicalMapping device;
+    bool ok = AllocateChildDeviceMapping(share_msg, &device);
+    std::vector<uint8_t> actual(options.requested_size);
+    if (ok) {
+        ok = CopyWithKind(
+                 device.virt, device.size, host_mapping.virt, actual.size(),
+                 ACL_MEMCPY_HOST_TO_DEVICE,
+                 label_prefix + " aclrtMemcpy(H2D imported host VA to device VA)") &&
+             CopyMappingToHost(
+                 &actual, device.virt, actual.size(), device_config,
+                 label_prefix + " aclrtMemcpy(D2H imported host H2D result)") &&
+             VerifyPattern(actual, expected_seed,
+                           label_prefix + " imported host H2D pattern");
+    }
+
+    device.Cleanup();
+    return ok;
+}
+
+bool RunDeviceToImportedHostProbe(const ShareMsg& share_msg,
+                                  PhysicalMapping* host_mapping,
+                                  uint32_t seed,
+                                  const std::string& label_prefix)
+{
+    std::cout << "  " << label_prefix
+              << " device VA -> imported host VA D2H probe\n";
+
+    Options options;
+    options.device = share_msg.device;
+    options.requested_size = static_cast<size_t>(share_msg.test_size);
+    const auto device_config = MakeDeviceConfig(options);
+
+    PhysicalMapping device;
+    bool ok = AllocateChildDeviceMapping(share_msg, &device);
+    if (ok) {
+        const auto expected = MakePattern(options.requested_size, seed);
+        const auto clear = MakePattern(options.requested_size, seed ^ 0xffU);
+        std::vector<uint8_t> actual(options.requested_size);
+
+        ok = CopyHostToMapping(
+                 device.virt, device.size, expected, device_config,
+                 label_prefix + " aclrtMemcpy(H2D device VA source)") &&
+             CopyWithKind(
+                 host_mapping->virt, host_mapping->size, device.virt,
+                 expected.size(), ACL_MEMCPY_DEVICE_TO_HOST,
+                 label_prefix + " aclrtMemcpy(D2H device VA to imported host VA)") &&
+             CopyHostToMapping(
+                 device.virt, device.size, clear, device_config,
+                 label_prefix + " aclrtMemcpy(H2D clear device VA)") &&
+             CopyWithKind(
+                 device.virt, device.size, host_mapping->virt, expected.size(),
+                 ACL_MEMCPY_HOST_TO_DEVICE,
+                 label_prefix + " aclrtMemcpy(H2D imported host VA roundtrip)") &&
+             CopyMappingToHost(
+                 &actual, device.virt, actual.size(), device_config,
+                 label_prefix + " aclrtMemcpy(D2H imported host roundtrip result)") &&
+             VerifyPattern(actual, seed,
+                           label_prefix + " imported host D2H/H2D roundtrip pattern");
+    }
+
+    device.Cleanup();
+    return ok;
+}
+
 bool ImportAndMapSharedHandle(const ShareMsg& share_msg, size_t index,
                               const PhysicalMemoryConfig& config,
                               PhysicalMapping* mapping, aclError* failure_ret)
@@ -418,19 +514,37 @@ int RunSingleMappingIpcChild(int write_fd, const ShareMsg& share_msg,
         return 1;
     }
 
-    std::vector<uint8_t> actual(static_cast<size_t>(share_msg.test_size));
-    bool ok = CopyMappingToHost(
-                  &actual, mapping.virt, actual.size(), config,
-                  "child aclrtMemcpy(" + std::string(config.read_tag) + " parent pattern)") &&
-              VerifyPattern(actual, share_msg.parent_seed, "child sees parent pattern");
+    bool host_to_device_ok = true;
+    if (IsHostPhysicalConfig(config)) {
+        host_to_device_ok = RunImportedHostToDeviceProbe(
+            share_msg, mapping, share_msg.parent_seed,
+            "child single mapping");
+    }
 
-    if (ok) {
+    std::vector<uint8_t> actual(static_cast<size_t>(share_msg.test_size));
+    const bool read_ok = CopyMappingToHost(
+                             &actual, mapping.virt, actual.size(), config,
+                             "child aclrtMemcpy(" + std::string(config.read_tag) +
+                                 " parent pattern)") &&
+                         VerifyPattern(actual, share_msg.parent_seed,
+                                       "child sees parent pattern");
+
+    bool device_to_host_ok = true;
+    if (IsHostPhysicalConfig(config)) {
+        device_to_host_ok = RunDeviceToImportedHostProbe(
+            share_msg, &mapping, share_msg.child_seed,
+            "child single mapping");
+    }
+
+    bool write_ok = false;
+    if (read_ok) {
         const auto reply = MakePattern(actual.size(), share_msg.child_seed);
-        ok = CopyHostToMapping(
+        write_ok = CopyHostToMapping(
             mapping.virt, mapping.size, reply, config,
             "child aclrtMemcpy(" + std::string(config.write_tag) + " reply pattern)");
     }
 
+    const bool ok = read_ok && write_ok && host_to_device_ok && device_to_host_ok;
     mapping.Cleanup();
     SendChildResult(write_fd, ok, ok ? ACL_SUCCESS : ACL_ERROR_RT_PARAM_INVALID,
                     ok ? "child verified and wrote reply" : "child verification failed");
@@ -455,28 +569,45 @@ int RunVaToVaIpcChild(int write_fd, const ShareMsg& share_msg,
         failure_ret = ACL_ERROR_RT_PARAM_INVALID;
     }
 
+    bool host_to_device_ok = true;
+    if (ok && IsHostPhysicalConfig(config)) {
+        host_to_device_ok = RunImportedHostToDeviceProbe(
+            share_msg, dst, share_msg.parent_seed,
+            "child VA-to-VA dst");
+    }
+
     std::vector<uint8_t> actual(static_cast<size_t>(share_msg.test_size));
+    bool read_ok = false;
     if (ok) {
-        ok = CopyMappingToHost(
-                 &actual, dst.virt, actual.size(), config,
-                 "child aclrtMemcpy(" + std::string(config.read_tag) +
-                     " dst after parent VA-to-VA)") &&
-             VerifyPattern(actual, share_msg.parent_seed,
-                           "child sees parent VA-to-VA pattern");
+        read_ok = CopyMappingToHost(
+                      &actual, dst.virt, actual.size(), config,
+                      "child aclrtMemcpy(" + std::string(config.read_tag) +
+                          " dst after parent VA-to-VA)") &&
+                  VerifyPattern(actual, share_msg.parent_seed,
+                                "child sees parent VA-to-VA pattern");
     }
 
-    if (ok) {
+    bool device_to_host_ok = true;
+    if (ok && IsHostPhysicalConfig(config)) {
+        device_to_host_ok = RunDeviceToImportedHostProbe(
+            share_msg, &src, share_msg.child_seed,
+            "child VA-to-VA src");
+    }
+
+    bool reply_ok = false;
+    if (read_ok) {
         const auto reply = MakePattern(actual.size(), share_msg.child_seed);
-        ok = CopyHostToMapping(
-                 src.virt, src.size, reply, config,
-                 "child aclrtMemcpy(" + std::string(config.write_tag) +
-                     " VA-to-VA source)") &&
-             CopyMappingToMapping(
-                 dst.virt, dst.size, src.virt, reply.size(), config,
-                 "child aclrtMemcpy(" + std::string(config.va_to_va_tag) +
-                     " VA-to-VA reply)");
+        reply_ok = CopyHostToMapping(
+                       src.virt, src.size, reply, config,
+                       "child aclrtMemcpy(" + std::string(config.write_tag) +
+                           " VA-to-VA source)") &&
+                   CopyMappingToMapping(
+                       dst.virt, dst.size, src.virt, reply.size(), config,
+                       "child aclrtMemcpy(" + std::string(config.va_to_va_tag) +
+                           " VA-to-VA reply)");
     }
 
+    ok = ok && read_ok && reply_ok && host_to_device_ok && device_to_host_ok;
     dst.Cleanup();
     src.Cleanup();
     SendChildResult(write_fd, ok, ok ? ACL_SUCCESS : failure_ret,
