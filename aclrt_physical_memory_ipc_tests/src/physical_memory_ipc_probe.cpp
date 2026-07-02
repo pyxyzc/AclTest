@@ -22,10 +22,6 @@
 #define ACL_RT_VMM_EXPORT_FLAG_DISABLE_PID_VALIDATION 0x1UL
 #endif
 
-#ifndef ACL_HBM_MEM_NORMAL
-#define ACL_HBM_MEM_NORMAL ACL_MEM_NORMAL
-#endif
-
 namespace {
 
 constexpr uint32_t kPidMagic = 0x50494431U;
@@ -86,6 +82,8 @@ std::string AclErrorHint(aclError ret)
             return "ACL_SUCCESS";
         case ACL_ERROR_REPEAT_INITIALIZE:
             return "ACL_ERROR_REPEAT_INITIALIZE";
+        case ACL_ERROR_INVALID_PARAM:
+            return "ACL_ERROR_INVALID_PARAM";
         case ACL_ERROR_RT_PARAM_INVALID:
             return "ACL_ERROR_RT_PARAM_INVALID";
         case ACL_ERROR_RT_FEATURE_NOT_SUPPORT:
@@ -296,7 +294,7 @@ aclrtPhysicalMemProp MakeDevicePhysicalMemProp(int device)
     aclrtPhysicalMemProp prop = {};
     prop.handleType = ACL_MEM_HANDLE_TYPE_NONE;
     prop.allocationType = ACL_MEM_ALLOCATION_TYPE_PINNED;
-    prop.memAttr = ACL_HBM_MEM_NORMAL;
+    prop.memAttr = ACL_HBM_MEM_HUGE;
     prop.location.type = ACL_MEM_LOCATION_TYPE_DEVICE;
     prop.location.id = device;
     prop.reserve = 0;
