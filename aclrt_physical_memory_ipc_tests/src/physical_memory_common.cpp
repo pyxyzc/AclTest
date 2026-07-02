@@ -526,6 +526,13 @@ bool CopyMappingToMapping(void* dst, size_t dst_max, const void* src, size_t cop
     return LogAcl(label, ret);
 }
 
+bool CopyWithKind(void* dst, size_t dst_max, const void* src, size_t copy_size,
+                  aclrtMemcpyKind kind, const std::string& label)
+{
+    const aclError ret = aclrtMemcpy(dst, dst_max, src, copy_size, kind);
+    return LogAcl(label, ret);
+}
+
 uint32_t ShareKindValue(const Options& options)
 {
     return options.share_kind == ShareKind::Fabric ? 1U : 0U;
@@ -1199,6 +1206,67 @@ bool RunSingleProcessVaToVaSubtest(const Options& options,
     return ok;
 }
 
+bool RunSingleProcessHostDeviceVaSubtest(const Options& options)
+{
+    std::cout << "\n[single-process] host VA <-> device VA physical mapping memcpy\n";
+
+    const auto host_config = MakeHostConfig(options);
+    const auto device_config = MakeDeviceConfig(options);
+
+    size_t host_aligned_size = 0;
+    bool ok = QueryAlignedSize(host_config.prop, options.requested_size,
+                               &host_aligned_size);
+
+    size_t device_aligned_size = 0;
+    ok = ok && QueryAlignedSize(device_config.prop, options.requested_size,
+                                &device_aligned_size);
+
+    PhysicalMapping host;
+    PhysicalMapping device;
+    ok = ok && AllocateAndMapPhysical(host_config, host_aligned_size, &host);
+    ok = ok && AllocateAndMapPhysical(device_config, device_aligned_size, &device);
+
+    const uint32_t host_to_device_seed = 0x91U;
+    if (ok) {
+        const auto expected = MakePattern(options.requested_size, host_to_device_seed);
+        std::vector<uint8_t> actual(options.requested_size);
+        ok = CopyHostToMapping(
+                 host.virt, host.size, expected, host_config,
+                 "aclrtMemcpy(H2H host VA source)") &&
+             CopyWithKind(
+                 device.virt, device.size, host.virt, expected.size(),
+                 ACL_MEMCPY_HOST_TO_DEVICE,
+                 "aclrtMemcpy(H2D host VA to device VA)") &&
+             CopyMappingToHost(
+                 &actual, device.virt, actual.size(), device_config,
+                 "aclrtMemcpy(D2H host VA to device VA result)") &&
+             VerifyPattern(actual, host_to_device_seed,
+                           "single-process host VA to device VA pattern");
+    }
+
+    const uint32_t device_to_host_seed = 0xc3U;
+    if (ok) {
+        const auto expected = MakePattern(options.requested_size, device_to_host_seed);
+        std::vector<uint8_t> actual(options.requested_size);
+        ok = CopyHostToMapping(
+                 device.virt, device.size, expected, device_config,
+                 "aclrtMemcpy(H2D device VA source)") &&
+             CopyWithKind(
+                 host.virt, host.size, device.virt, expected.size(),
+                 ACL_MEMCPY_DEVICE_TO_HOST,
+                 "aclrtMemcpy(D2H device VA to host VA)") &&
+             CopyMappingToHost(
+                 &actual, host.virt, actual.size(), host_config,
+                 "aclrtMemcpy(H2H device VA to host VA result)") &&
+             VerifyPattern(actual, device_to_host_seed,
+                           "single-process device VA to host VA pattern");
+    }
+
+    device.Cleanup();
+    host.Cleanup();
+    return ok;
+}
+
 }  // namespace
 
 bool RunSingleProcessVmmTest(const Options& options)
@@ -1233,6 +1301,7 @@ bool RunSingleProcessVmmTest(const Options& options)
               VerifyPattern(actual, seed, "single-process pattern");
     mapping.Cleanup();
     ok = RunSingleProcessVaToVaSubtest(options, config, aligned_size) && ok;
+    ok = RunSingleProcessHostDeviceVaSubtest(options) && ok;
     return ok;
 }
 

@@ -188,7 +188,7 @@ VMM VA-to-VA 校验：
 
 | Probe | 覆盖接口 |
 | --- | --- |
-| `single_process_vmm_probe` | 单映射 H2D/D2H 校验；两块独立 device physical memory 的 VA-to-VA D2D 校验 |
+| `single_process_vmm_probe` | 单映射 H2D/D2H 校验；两块独立 device physical memory 的 VA-to-VA D2D 校验；host physical VA 与 device physical VA 的 H2D/D2H 互传校验 |
 | `device_physical_ipc_probe` parent | 单 handle IPC 双向校验；两 handle IPC 中 parent 执行一次 VA-to-VA D2D，并导出 src/dst 两个 handle |
 | `device_physical_ipc_probe` child | import/map src/dst 两个 handle；验证 parent VA-to-VA 结果；再执行一次 child VA-to-VA D2D |
 | `host_physical_ipc_probe` | Host NUMA physical memory 的单 handle IPC 双向校验；两 handle IPC 中 parent/child 各执行一次 VA-to-VA H2H |

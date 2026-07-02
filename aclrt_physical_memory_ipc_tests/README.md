@@ -19,7 +19,9 @@
    aclrtReserveMemAddress -> aclrtMapMem -> aclrtMemSetAccess ->
    aclrtMemcpy -> aclrtUnmapMem -> aclrtFreePhysical ->
    aclrtReleaseMemAddress`。除 host/vector 与 VMM VA 之间的拷贝外，还会申请两块独立
-   physical memory 并验证 VMM VA-to-VA memcpy。
+   device physical memory 并验证 VMM device VA-to-device VA memcpy；随后申请 host
+   physical memory 与 device physical memory，验证 host VA -> device VA 和 device
+   VA -> host VA。
 2. Device physical memory 跨进程共享：
    父进程申请 `ACL_MEM_LOCATION_TYPE_DEVICE + ACL_HBM_MEM_HUGE` 物理内存并导出
    shareable handle，子进程 import 后重新 reserve/map/set access。子进程先读父进程
