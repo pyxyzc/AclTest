@@ -95,6 +95,9 @@ unset(CMAKE_REQUIRED_INCLUDES)
 
 add_library(physical_memory_probe_common STATIC
     src/physical_memory_common.cpp
+    src/physical_memory_utils.cpp
+    src/physical_memory_single_process.cpp
+    src/physical_memory_ipc.cpp
 )
 
 target_include_directories(physical_memory_probe_common PUBLIC

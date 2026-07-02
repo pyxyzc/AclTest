@@ -31,7 +31,9 @@
 3. Host physical memory 跨进程共享：
    父进程申请 `ACL_MEM_LOCATION_TYPE_HOST_NUMA + ACL_DDR_MEM_HUGE` 物理内存并导出
    shareable handle，子进程 import 后重新 reserve/map/set access。该测试使用
-   `ACL_MEM_LOCATION_TYPE_HOST` access desc 和 `ACL_MEMCPY_HOST_TO_HOST` 做双向校验。
+   2MiB 固定对齐申请大小，不再对 host physical prop 调用
+   `aclrtMemGetAllocationGranularity`；随后使用 `ACL_MEM_LOCATION_TYPE_HOST`
+   access desc 和 `ACL_MEMCPY_HOST_TO_HOST` 做双向校验。
    随后追加两块独立 host physical memory 的跨进程 VA-to-VA 校验，parent 和 child
    各执行一次 H2H VA-to-VA memcpy。任一步不支持或失败都会返回 FAIL。
 
@@ -69,10 +71,10 @@ cmake --build build -j
 ./build/host_physical_ipc_probe --device 0 --host-numa 0 --size 4096 --use-v1
 ```
 
-`--size` 是实际校验的数据长度；程序会用
+`--size` 是实际校验的数据长度；device physical memory 会用
 `aclrtMemGetAllocationGranularity(... ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM ...)`
-把物理内存申请大小向上对齐。`--host-numa` 只影响 host physical memory
-测试。
+把申请大小向上对齐，host physical memory 则跳过 granularity 查询并直接按 2MiB
+对齐。`--host-numa` 只影响 host physical memory 测试。
 
 ## 官方文档
 

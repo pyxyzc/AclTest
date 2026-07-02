@@ -69,8 +69,9 @@ aclrtFreePhysical(handle);
 
 关键点：
 
-- `aclrtMallocPhysical` 的 `size` 应按 `ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM`
-  对齐。
+- device physical memory 的 `aclrtMallocPhysical` size 应按
+  `ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM` 对齐；host physical memory 当前 probe
+  不查询该 granularity，直接按 2MiB 对齐。
 - `aclrtMapMem` 的 `size` 必须和物理内存申请大小匹配，并满足粒度对齐要求。
 - `offset` 和 `flags` 当前固定为 `0`。
 - 释放虚拟地址前必须先 `aclrtUnmapMem`。
