@@ -370,19 +370,28 @@ bool IsHostPhysicalConfig(const PhysicalMemoryConfig& config)
     return config.access_location.type == ACL_MEM_LOCATION_TYPE_HOST;
 }
 
-bool AllocateChildDeviceMapping(const ShareMsg& share_msg, PhysicalMapping* device)
-{
-    Options options;
-    options.device = share_msg.device;
-    options.requested_size = static_cast<size_t>(share_msg.test_size);
+struct DeviceAllocation {
+    void* ptr = nullptr;
+    size_t size = 0;
+    bool allocated = false;
 
-    const auto device_config = MakeDeviceConfig(options);
-    size_t aligned_size = 0;
-    if (!QueryAlignedSize(device_config, options.requested_size, &aligned_size)) {
-        return false;
+    bool Allocate(size_t bytes)
+    {
+        size = bytes;
+        const aclError ret = aclrtMalloc(&ptr, size, ACL_MEM_MALLOC_HUGE_FIRST);
+        allocated = (ret == ACL_SUCCESS);
+        return LogAcl("aclrtMalloc(device ptr)", ret);
     }
-    return AllocateAndMapPhysical(device_config, aligned_size, device);
-}
+
+    void Cleanup()
+    {
+        if (allocated && ptr != nullptr) {
+            (void)LogAcl("cleanup aclrtFree(device ptr)", aclrtFree(ptr));
+            ptr = nullptr;
+            allocated = false;
+        }
+    }
+};
 
 bool RunImportedHostToDeviceProbe(const ShareMsg& share_msg,
                                   const PhysicalMapping& host_mapping,
@@ -390,23 +399,23 @@ bool RunImportedHostToDeviceProbe(const ShareMsg& share_msg,
                                   const std::string& label_prefix)
 {
     std::cout << "  " << label_prefix
-              << " imported host VA -> device VA H2D probe\n";
+              << " imported host VA -> device ptr H2D probe\n";
 
     Options options;
     options.device = share_msg.device;
     options.requested_size = static_cast<size_t>(share_msg.test_size);
-    const auto device_config = MakeDeviceConfig(options);
 
-    PhysicalMapping device;
-    bool ok = AllocateChildDeviceMapping(share_msg, &device);
+    DeviceAllocation device;
+    bool ok = device.Allocate(options.requested_size);
     std::vector<uint8_t> actual(options.requested_size);
     if (ok) {
         ok = CopyWithKind(
-                 device.virt, device.size, host_mapping.virt, actual.size(),
+                 device.ptr, device.size, host_mapping.virt, actual.size(),
                  ACL_MEMCPY_HOST_TO_DEVICE,
-                 label_prefix + " aclrtMemcpy(H2D imported host VA to device VA)") &&
-             CopyMappingToHost(
-                 &actual, device.virt, actual.size(), device_config,
+                 label_prefix + " aclrtMemcpy(H2D imported host VA to device ptr)") &&
+             CopyWithKind(
+                 actual.data(), actual.size(), device.ptr, actual.size(),
+                 ACL_MEMCPY_DEVICE_TO_HOST,
                  label_prefix + " aclrtMemcpy(D2H imported host H2D result)") &&
              VerifyPattern(actual, expected_seed,
                            label_prefix + " imported host H2D pattern");
@@ -422,36 +431,38 @@ bool RunDeviceToImportedHostProbe(const ShareMsg& share_msg,
                                   const std::string& label_prefix)
 {
     std::cout << "  " << label_prefix
-              << " device VA -> imported host VA D2H probe\n";
+              << " device ptr -> imported host VA D2H probe\n";
 
     Options options;
     options.device = share_msg.device;
     options.requested_size = static_cast<size_t>(share_msg.test_size);
-    const auto device_config = MakeDeviceConfig(options);
 
-    PhysicalMapping device;
-    bool ok = AllocateChildDeviceMapping(share_msg, &device);
+    DeviceAllocation device;
+    bool ok = device.Allocate(options.requested_size);
     if (ok) {
         const auto expected = MakePattern(options.requested_size, seed);
         const auto clear = MakePattern(options.requested_size, seed ^ 0xffU);
         std::vector<uint8_t> actual(options.requested_size);
 
-        ok = CopyHostToMapping(
-                 device.virt, device.size, expected, device_config,
-                 label_prefix + " aclrtMemcpy(H2D device VA source)") &&
+        ok = CopyWithKind(
+                 device.ptr, device.size, expected.data(), expected.size(),
+                 ACL_MEMCPY_HOST_TO_DEVICE,
+                 label_prefix + " aclrtMemcpy(H2D device ptr source)") &&
              CopyWithKind(
-                 host_mapping->virt, host_mapping->size, device.virt,
+                 host_mapping->virt, host_mapping->size, device.ptr,
                  expected.size(), ACL_MEMCPY_DEVICE_TO_HOST,
-                 label_prefix + " aclrtMemcpy(D2H device VA to imported host VA)") &&
-             CopyHostToMapping(
-                 device.virt, device.size, clear, device_config,
-                 label_prefix + " aclrtMemcpy(H2D clear device VA)") &&
+                 label_prefix + " aclrtMemcpy(D2H device ptr to imported host VA)") &&
              CopyWithKind(
-                 device.virt, device.size, host_mapping->virt, expected.size(),
+                 device.ptr, device.size, clear.data(), clear.size(),
+                 ACL_MEMCPY_HOST_TO_DEVICE,
+                 label_prefix + " aclrtMemcpy(H2D clear device ptr)") &&
+             CopyWithKind(
+                 device.ptr, device.size, host_mapping->virt, expected.size(),
                  ACL_MEMCPY_HOST_TO_DEVICE,
                  label_prefix + " aclrtMemcpy(H2D imported host VA roundtrip)") &&
-             CopyMappingToHost(
-                 &actual, device.virt, actual.size(), device_config,
+             CopyWithKind(
+                 actual.data(), actual.size(), device.ptr, actual.size(),
+                 ACL_MEMCPY_DEVICE_TO_HOST,
                  label_prefix + " aclrtMemcpy(D2H imported host roundtrip result)") &&
              VerifyPattern(actual, seed,
                            label_prefix + " imported host D2H/H2D roundtrip pattern");

@@ -34,7 +34,7 @@
    2MiB 固定对齐申请大小，不再对 host physical prop 调用
    `aclrtMemGetAllocationGranularity`；随后使用 `ACL_MEM_LOCATION_TYPE_HOST`
    access desc 和 `ACL_MEMCPY_HOST_TO_HOST` 做双向校验。
-   若子进程 import/map 成功，还会额外用一块 device physical mapping 探测
+   若子进程 import/map 成功，还会额外用一块 `aclrtMalloc` 申请的 device ptr 探测
    imported host VA 参与 `ACL_MEMCPY_HOST_TO_DEVICE` 与
    `ACL_MEMCPY_DEVICE_TO_HOST` 的能力。
    随后追加两块独立 host physical memory 的跨进程 VA-to-VA 校验，parent 和 child
