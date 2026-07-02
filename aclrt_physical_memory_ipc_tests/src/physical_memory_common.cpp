@@ -41,6 +41,7 @@ constexpr uint32_t kStopMagic = 0x53544f50U;
 constexpr uint32_t kResultMagic = 0x52534c54U;
 constexpr size_t kMaxSharedHandleBytes = 128;
 constexpr size_t kMaxSharedHandleCount = 2;
+constexpr size_t kHostPhysicalFixedGranularity = 2UL * 1024UL * 1024UL;
 constexpr aclrtMemAccessFlags kAclMemAccessReadWrite =
     static_cast<aclrtMemAccessFlags>(0x3UL);
 
@@ -85,6 +86,7 @@ struct ChildResult {
 struct PhysicalMemoryConfig {
     const char* name = "";
     aclrtPhysicalMemProp prop = {};
+    size_t fixed_allocation_granularity = 0;
     aclrtMemLocation access_location = {};
     aclrtMemcpyKind host_to_mapping_kind = ACL_MEMCPY_HOST_TO_DEVICE;
     aclrtMemcpyKind mapping_to_host_kind = ACL_MEMCPY_DEVICE_TO_HOST;
@@ -360,6 +362,7 @@ PhysicalMemoryConfig MakeHostConfig(const Options& options)
     PhysicalMemoryConfig config;
     config.name = "host physical memory";
     config.prop = MakeHostPhysicalMemProp(options.host_numa);
+    config.fixed_allocation_granularity = kHostPhysicalFixedGranularity;
     config.access_location.type = ACL_MEM_LOCATION_TYPE_HOST;
     config.access_location.id = 0;
     config.host_to_mapping_kind = ACL_MEMCPY_HOST_TO_HOST;
@@ -379,11 +382,22 @@ size_t AlignUp(size_t value, size_t alignment)
     return ((value + alignment - 1U) / alignment) * alignment;
 }
 
-bool QueryAlignedSize(const aclrtPhysicalMemProp& prop, size_t requested, size_t* aligned)
+bool QueryAlignedSize(const PhysicalMemoryConfig& config, size_t requested, size_t* aligned)
 {
+    if (config.fixed_allocation_granularity != 0U) {
+        *aligned = AlignUp(requested, config.fixed_allocation_granularity);
+        std::cout << "  skip aclrtMemGetAllocationGranularity for "
+                  << config.name << "\n";
+        std::cout << "  requested_size=" << requested
+                  << ", fixed_granularity="
+                  << config.fixed_allocation_granularity
+                  << ", aligned_size=" << *aligned << "\n";
+        return true;
+    }
+
     size_t minimum = 0;
     auto ret = aclrtMemGetAllocationGranularity(
-        const_cast<aclrtPhysicalMemProp*>(&prop),
+        const_cast<aclrtPhysicalMemProp*>(&config.prop),
         ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM, &minimum);
     if (!LogAcl("aclrtMemGetAllocationGranularity(MIN)", ret)) {
         return false;
@@ -391,7 +405,7 @@ bool QueryAlignedSize(const aclrtPhysicalMemProp& prop, size_t requested, size_t
 
     size_t recommended = 0;
     ret = aclrtMemGetAllocationGranularity(
-        const_cast<aclrtPhysicalMemProp*>(&prop),
+        const_cast<aclrtPhysicalMemProp*>(&config.prop),
         ACL_RT_MEM_ALLOC_GRANULARITY_RECOMMENDED, &recommended);
     (void)LogAcl("aclrtMemGetAllocationGranularity(REC)", ret);
 
@@ -912,7 +926,7 @@ bool RunSingleMappingIpcTest(const Options& options, const PhysicalMemoryConfig&
     ok = ok && runtime.Init() && runtime.SetDevice(options.device);
 
     size_t aligned_size = 0;
-    ok = ok && QueryAlignedSize(config.prop, options.requested_size, &aligned_size);
+    ok = ok && QueryAlignedSize(config, options.requested_size, &aligned_size);
 
     PhysicalMapping mapping;
     ok = ok && AllocateAndMapPhysical(config, aligned_size, &mapping);
@@ -1040,7 +1054,7 @@ bool RunVaToVaIpcTest(const Options& options, const PhysicalMemoryConfig& config
     ok = ok && runtime.Init() && runtime.SetDevice(options.device);
 
     size_t aligned_size = 0;
-    ok = ok && QueryAlignedSize(config.prop, options.requested_size, &aligned_size);
+    ok = ok && QueryAlignedSize(config, options.requested_size, &aligned_size);
 
     PhysicalMapping src;
     PhysicalMapping dst;
@@ -1214,11 +1228,11 @@ bool RunSingleProcessHostDeviceVaSubtest(const Options& options)
     const auto device_config = MakeDeviceConfig(options);
 
     size_t host_aligned_size = 0;
-    bool ok = QueryAlignedSize(host_config.prop, options.requested_size,
+    bool ok = QueryAlignedSize(host_config, options.requested_size,
                                &host_aligned_size);
 
     size_t device_aligned_size = 0;
-    ok = ok && QueryAlignedSize(device_config.prop, options.requested_size,
+    ok = ok && QueryAlignedSize(device_config, options.requested_size,
                                 &device_aligned_size);
 
     PhysicalMapping host;
@@ -1279,7 +1293,7 @@ bool RunSingleProcessVmmTest(const Options& options)
 
     const auto config = MakeDeviceConfig(options);
     size_t aligned_size = 0;
-    if (!QueryAlignedSize(config.prop, options.requested_size, &aligned_size)) {
+    if (!QueryAlignedSize(config, options.requested_size, &aligned_size)) {
         return false;
     }
 
