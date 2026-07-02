@@ -120,6 +120,58 @@ uint32_t ShareKindValue(const Options& options)
     return options.share_kind == ShareKind::Fabric ? 1U : 0U;
 }
 
+const char* BlobApiName(uint32_t api_version)
+{
+    if (api_version == static_cast<uint32_t>(ShareApi::V1)) {
+        return "V1";
+    }
+    if (api_version == static_cast<uint32_t>(ShareApi::V2)) {
+        return "V2";
+    }
+    return "unknown";
+}
+
+const char* BlobShareKindName(uint32_t share_type)
+{
+    return share_type == 0U ? "default" : "fabric";
+}
+
+uint64_t ReadU64Prefix(const uint8_t* data, size_t size)
+{
+    uint64_t value = 0;
+    if (size >= sizeof(value)) {
+        std::memcpy(&value, data, sizeof(value));
+    }
+    return value;
+}
+
+void PrintSharedHandleBlob(const char* label, const SharedHandleBlob& blob)
+{
+    std::cout << "  " << label
+              << " api=" << BlobApiName(blob.api_version)
+              << "(" << blob.api_version << ")"
+              << ", share_kind=" << BlobShareKindName(blob.share_type)
+              << "(" << blob.share_type << ")"
+              << ", share_len=" << blob.share_len;
+    if (blob.share_len >= sizeof(uint64_t)) {
+        std::cout << ", u64_prefix=" << ReadU64Prefix(blob.share, blob.share_len);
+    }
+    std::cout << "\n";
+}
+
+const char* RuntimeShareTypeName(aclrtMemSharedHandleType share_type)
+{
+    if (share_type == ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT) {
+        return "ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT";
+    }
+#if ACLTEST_HAS_FABRIC_SHARE_TYPE
+    if (share_type == ACL_MEM_SHARE_HANDLE_TYPE_FABRIC) {
+        return "ACL_MEM_SHARE_HANDLE_TYPE_FABRIC";
+    }
+#endif
+    return "unknown";
+}
+
 bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
                            int32_t child_bare_tgid, SharedHandleBlob* blob)
 {
@@ -150,6 +202,11 @@ bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
         }
 #endif
 
+        std::cout << "  export request api=V2"
+                  << ", runtime_share_type=" << RuntimeShareTypeName(share_type)
+                  << "(" << static_cast<int>(share_type) << ")"
+                  << ", flags=" << flags
+                  << ", child_bare_tgid=" << child_bare_tgid << "\n";
         aclError ret = aclrtMemExportToShareableHandleV2(handle, flags, share_type, share_ptr);
         if (!LogAcl("aclrtMemExportToShareableHandleV2", ret)) {
             return false;
@@ -165,6 +222,7 @@ bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
 
         blob->share_len = static_cast<uint32_t>(share_len);
         std::memcpy(blob->share, share_ptr, share_len);
+        PrintSharedHandleBlob("exported share blob", *blob);
         return true;
     }
 #else
@@ -181,6 +239,10 @@ bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
 
     blob->api_version = static_cast<uint32_t>(ShareApi::V1);
     uint64_t shareable_handle = 0;
+    std::cout << "  export request api=V1"
+              << ", handle_type=ACL_MEM_HANDLE_TYPE_NONE"
+              << ", flags=" << flags
+              << ", child_bare_tgid=" << child_bare_tgid << "\n";
     aclError ret = aclrtMemExportToShareableHandle(
         handle, ACL_MEM_HANDLE_TYPE_NONE, flags, &shareable_handle);
     if (!LogAcl("aclrtMemExportToShareableHandle(V1)", ret)) {
@@ -196,12 +258,17 @@ bool ExportShareableHandle(const Options& options, aclrtDrvMemHandle handle,
 
     blob->share_len = sizeof(shareable_handle);
     std::memcpy(blob->share, &shareable_handle, sizeof(shareable_handle));
+    PrintSharedHandleBlob("exported share blob", *blob);
     return true;
 }
 
 bool ImportShareableHandle(const SharedHandleBlob& blob, int device,
-                           aclrtDrvMemHandle* handle)
+                           aclrtDrvMemHandle* handle, aclError* failure_ret)
 {
+    if (failure_ret != nullptr) {
+        *failure_ret = ACL_SUCCESS;
+    }
+
     if (blob.api_version == static_cast<uint32_t>(ShareApi::V2)) {
 #if ACLTEST_HAS_V2_SHARE_API
         aclrtMemSharedHandleType share_type = ACL_MEM_SHARE_HANDLE_TYPE_DEFAULT;
@@ -214,6 +281,9 @@ bool ImportShareableHandle(const SharedHandleBlob& blob, int device,
         if (blob.share_type == 0U) {
             if (blob.share_len != sizeof(default_handle)) {
                 std::cerr << "  invalid V2 default handle size=" << blob.share_len << "\n";
+                if (failure_ret != nullptr) {
+                    *failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+                }
                 return false;
             }
             std::memcpy(&default_handle, blob.share, sizeof(default_handle));
@@ -222,6 +292,9 @@ bool ImportShareableHandle(const SharedHandleBlob& blob, int device,
 #if ACLTEST_HAS_FABRIC_SHARE_TYPE
             if (blob.share_len != sizeof(fabric_handle)) {
                 std::cerr << "  invalid V2 fabric handle size=" << blob.share_len << "\n";
+                if (failure_ret != nullptr) {
+                    *failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+                }
                 return false;
             }
             std::memcpy(&fabric_handle, blob.share, sizeof(fabric_handle));
@@ -233,11 +306,26 @@ bool ImportShareableHandle(const SharedHandleBlob& blob, int device,
 #endif
         }
 
+        std::cout << "  import request api=V2"
+                  << ", runtime_share_type=" << RuntimeShareTypeName(share_type)
+                  << "(" << static_cast<int>(share_type) << ")"
+                  << ", flags=0"
+                  << ", current_device=" << device;
+        if (blob.share_len >= sizeof(uint64_t)) {
+            std::cout << ", u64_prefix=" << ReadU64Prefix(blob.share, blob.share_len);
+        }
+        std::cout << "\n";
         const aclError ret = aclrtMemImportFromShareableHandleV2(
             share_ptr, share_type, 0, handle);
+        if (failure_ret != nullptr) {
+            *failure_ret = ret;
+        }
         return LogAcl("aclrtMemImportFromShareableHandleV2", ret);
 #else
         std::cerr << "  this CANN header does not define V2 shareable handle APIs\n";
+        if (failure_ret != nullptr) {
+            *failure_ret = ACL_ERROR_RT_FEATURE_NOT_SUPPORT;
+        }
         return false;
 #endif
     }
@@ -245,11 +333,20 @@ bool ImportShareableHandle(const SharedHandleBlob& blob, int device,
     uint64_t shareable_handle = 0;
     if (blob.share_len != sizeof(shareable_handle)) {
         std::cerr << "  invalid V1 handle size=" << blob.share_len << "\n";
+        if (failure_ret != nullptr) {
+            *failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+        }
         return false;
     }
     std::memcpy(&shareable_handle, blob.share, sizeof(shareable_handle));
+    std::cout << "  import request api=V1"
+              << ", device=" << device
+              << ", shareable_handle=" << shareable_handle << "\n";
     const aclError ret = aclrtMemImportFromShareableHandle(
         shareable_handle, device, handle);
+    if (failure_ret != nullptr) {
+        *failure_ret = ret;
+    }
     return LogAcl("aclrtMemImportFromShareableHandle(V1)", ret);
 }
 
@@ -270,17 +367,25 @@ void SendChildResult(int write_fd, bool ok, aclError ret, const std::string& mes
 
 bool ImportAndMapSharedHandle(const ShareMsg& share_msg, size_t index,
                               const PhysicalMemoryConfig& config,
-                              PhysicalMapping* mapping)
+                              PhysicalMapping* mapping, aclError* failure_ret)
 {
+    if (failure_ret != nullptr) {
+        *failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+    }
     if (index >= share_msg.handle_count || index >= kMaxSharedHandleCount) {
         std::cerr << "  invalid shared handle index=" << index
                   << ", handle_count=" << share_msg.handle_count << "\n";
         return false;
     }
 
-    std::cout << "  import handle[" << index << "]\n";
+    std::cout << "  import handle[" << index << "] for " << config.name
+              << ", share_msg_device=" << share_msg.device
+              << ", aligned_size=" << share_msg.aligned_size
+              << ", test_size=" << share_msg.test_size << "\n";
+    PrintSharedHandleBlob("received share blob", share_msg.handles[index]);
     aclrtDrvMemHandle imported = nullptr;
-    if (!ImportShareableHandle(share_msg.handles[index], share_msg.device, &imported)) {
+    if (!ImportShareableHandle(share_msg.handles[index], share_msg.device, &imported,
+                               failure_ret)) {
         return false;
     }
 
@@ -288,6 +393,9 @@ bool ImportAndMapSharedHandle(const ShareMsg& share_msg, size_t index,
     if (!mapping->ReserveMapAndSetAccess(imported, share_msg.aligned_size,
                                          config.access_location)) {
         mapping->Cleanup();
+        if (failure_ret != nullptr) {
+            *failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+        }
         return false;
     }
     return true;
@@ -303,9 +411,10 @@ int RunSingleMappingIpcChild(int write_fd, const ShareMsg& share_msg,
     }
 
     PhysicalMapping mapping;
-    if (!ImportAndMapSharedHandle(share_msg, 0, config, &mapping)) {
+    aclError failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+    if (!ImportAndMapSharedHandle(share_msg, 0, config, &mapping, &failure_ret)) {
         mapping.Cleanup();
-        SendChildResult(write_fd, false, ACL_ERROR_RT_PARAM_INVALID, "child map failed");
+        SendChildResult(write_fd, false, failure_ret, "child map failed");
         return 1;
     }
 
@@ -339,8 +448,12 @@ int RunVaToVaIpcChild(int write_fd, const ShareMsg& share_msg,
 
     PhysicalMapping src;
     PhysicalMapping dst;
-    bool ok = ImportAndMapSharedHandle(share_msg, 0, config, &src) &&
-              ImportAndMapSharedHandle(share_msg, 1, config, &dst);
+    aclError failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+    bool ok = ImportAndMapSharedHandle(share_msg, 0, config, &src, &failure_ret) &&
+              ImportAndMapSharedHandle(share_msg, 1, config, &dst, &failure_ret);
+    if (ok) {
+        failure_ret = ACL_ERROR_RT_PARAM_INVALID;
+    }
 
     std::vector<uint8_t> actual(static_cast<size_t>(share_msg.test_size));
     if (ok) {
@@ -366,7 +479,7 @@ int RunVaToVaIpcChild(int write_fd, const ShareMsg& share_msg,
 
     dst.Cleanup();
     src.Cleanup();
-    SendChildResult(write_fd, ok, ok ? ACL_SUCCESS : ACL_ERROR_RT_PARAM_INVALID,
+    SendChildResult(write_fd, ok, ok ? ACL_SUCCESS : failure_ret,
                     ok ? "child VA-to-VA verified and wrote reply"
                        : "child VA-to-VA verification failed");
     return ok ? 0 : 1;
