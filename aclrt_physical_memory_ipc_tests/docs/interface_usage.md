@@ -182,32 +182,38 @@ aclrtFreePhysical
 
 ## 测试覆盖关系
 
-本目录的 `physical_memory_ipc_probe` 对应验证：
+本目录拆成三个单项 probe，并保留 `physical_memory_ipc_probe` 兼容 suite 入口。每个
+probe 都保留 host/vector 指针与 VMM VA 之间的校验，并追加独立 physical memory 之间的
+VMM VA-to-VA 校验：
 
-| 测试段 | 覆盖接口 |
+| Probe | 覆盖接口 |
 | --- | --- |
-| `[single-process]` | `aclrtMemGetAllocationGranularity`、`aclrtMallocPhysical`、`aclrtReserveMemAddress`、`aclrtMapMem`、`aclrtMemSetAccess`、`aclrtMemcpy`、`aclrtUnmapMem`、`aclrtReleaseMemAddress`、`aclrtFreePhysical` |
-| `[multi-process]` parent | `aclrtMallocPhysical`、`aclrtMemExportToShareableHandleV2`、`aclrtMemSetPidToShareableHandleV2`、`aclrtMemcpy` |
-| `[multi-process]` child | `aclrtDeviceGetBareTgid`、`aclrtMemImportFromShareableHandleV2`、`aclrtReserveMemAddress`、`aclrtMapMem`、`aclrtMemSetAccess`、`aclrtMemcpy` |
+| `single_process_vmm_probe` | 单映射 H2D/D2H 校验；两块独立 device physical memory 的 VA-to-VA D2D 校验 |
+| `device_physical_ipc_probe` parent | 单 handle IPC 双向校验；两 handle IPC 中 parent 执行一次 VA-to-VA D2D，并导出 src/dst 两个 handle |
+| `device_physical_ipc_probe` child | import/map src/dst 两个 handle；验证 parent VA-to-VA 结果；再执行一次 child VA-to-VA D2D |
+| `host_physical_ipc_probe` | Host NUMA physical memory 的单 handle IPC 双向校验；两 handle IPC 中 parent/child 各执行一次 VA-to-VA H2H |
 | cleanup | `aclrtUnmapMem`、`aclrtReleaseMemAddress`、`aclrtFreePhysical` |
 
 运行命令：
 
 ```bash
-./build/physical_memory_ipc_probe --device 0 --size 4096
+./build/single_process_vmm_probe --device 0 --size 4096
+./build/device_physical_ipc_probe --device 0 --size 4096
+./build/host_physical_ipc_probe --device 0 --host-numa 0 --size 4096
+./build/physical_memory_ipc_probe --device 0 --host-numa 0 --size 4096
 ```
 
 辅助探测：
 
 ```bash
 # 关闭白名单校验，确认导出/import 基础能力
-./build/physical_memory_ipc_probe --device 0 --size 4096 --disable-pid-validation
+./build/device_physical_ipc_probe --device 0 --size 4096 --disable-pid-validation
 
 # 强制使用 V1 接口
-./build/physical_memory_ipc_probe --device 0 --size 4096 --use-v1
+./build/device_physical_ipc_probe --device 0 --size 4096 --use-v1
 
 # 探测 fabric handle；仅部分 A3 跨 AI Server 共享场景支持
-./build/physical_memory_ipc_probe --device 0 --size 4096 --share-type fabric
+./build/device_physical_ipc_probe --device 0 --size 4096 --share-type fabric
 ```
 
 ## 官方文档入口
