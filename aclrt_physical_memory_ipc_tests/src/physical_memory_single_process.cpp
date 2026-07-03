@@ -137,6 +137,7 @@ bool VerifyDirection(const std::vector<uint8_t>& data, uint32_t seed,
                       << " mismatch at offset=" << i
                       << ", expected=" << static_cast<int>(expected)
                       << ", actual=" << static_cast<int>(data[i]) << "\n";
+            PrintRed("  " + direction + " ×");
             return false;
         }
     }
@@ -176,7 +177,11 @@ bool RunCopyDirection(const EndpointSpec& src_spec, const EndpointSpec& dst_spec
 
     const std::string direction =
         std::string(src_spec.name) + " -> " + dst_spec.name;
-    return ok && VerifyDirection(actual, seed, direction);
+    if (!ok) {
+        PrintRed("  " + direction + " ×");
+        return false;
+    }
+    return VerifyDirection(actual, seed, direction);
 }
 
 void PrintSubtestSection(const std::string& title)

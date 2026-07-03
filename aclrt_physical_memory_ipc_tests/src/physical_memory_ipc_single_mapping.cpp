@@ -173,6 +173,7 @@ bool VerifyIpcDirection(const std::vector<uint8_t>& data, uint32_t seed,
             std::cerr << "  " << direction << " mismatch at offset=" << i
                       << ", expected=" << static_cast<int>(expected)
                       << ", actual=" << static_cast<int>(data[i]) << "\n";
+            PrintRed("  " + direction + " ×");
             return false;
         }
     }
@@ -345,6 +346,8 @@ bool WaitForChild(pid_t pid, bool ok)
 bool RunIpcCopyDirection(const Options& options, const IpcDirection& direction)
 {
     (void)std::signal(SIGPIPE, SIG_IGN);
+    const std::string direction_name =
+        DirectionName(direction.src, direction.dst);
 
     int parent_to_child[2] = {-1, -1};
     int child_to_parent[2] = {-1, -1};
@@ -435,7 +438,12 @@ bool RunIpcCopyDirection(const Options& options, const IpcDirection& direction)
     }
     CloseFd(&child_to_parent[0]);
 
+    const bool verify_in_parent =
+        ok && IsImportedEndpoint(direction.dst);
     ok = ok && VerifyImportedDestination(options, direction, share_msg, &handles);
+    if (!ok && !verify_in_parent) {
+        PrintRed("  " + direction_name + " ×");
+    }
 
     CleanupParentHandles(&handles, share_msg.handle_count);
     return WaitForChild(pid, ok);
@@ -542,8 +550,12 @@ int RunIpcCopyDirectionChild(int write_fd, const ShareMsg& share_msg)
         ok = CopyEndpoint(readback_dst, dst, actual.size(), "child readback");
     }
 
-    if (ok && !IsImportedEndpoint(dst_kind)) {
+    const bool verify_in_child = ok && !IsImportedEndpoint(dst_kind);
+    if (verify_in_child) {
         ok = VerifyIpcDirection(actual, share_msg.parent_seed, direction);
+    }
+    if (!ok && !verify_in_child) {
+        PrintRed("  " + direction + " ×");
     }
 
     device_buffer.Cleanup();
