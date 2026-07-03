@@ -6,6 +6,6 @@ int main(int argc, char** argv)
         {"single-process VMM", acltest::RunSingleProcessVmmTest},
     };
     return acltest::RunTestProgram(
-        argc, argv, "Single Process VMM", tests, 1,
+        argc, argv, "single-process VMM", tests, 1,
         acltest::StartupDisplayMode::SingleProcessBanner);
 }

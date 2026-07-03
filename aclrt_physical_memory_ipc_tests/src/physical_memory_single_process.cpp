@@ -140,7 +140,7 @@ bool VerifyDirection(const std::vector<uint8_t>& data, uint32_t seed,
             return false;
         }
     }
-    PrintGreen("[single-process] " + direction + " √");
+    PrintGreen("  " + direction + " √");
     return true;
 }
 
