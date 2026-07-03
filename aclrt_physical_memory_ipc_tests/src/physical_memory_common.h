@@ -27,8 +27,14 @@ struct TestCase {
     TestFn run;
 };
 
+enum class StartupDisplayMode {
+    Default,
+    SingleProcessBanner,
+};
+
 int RunTestProgram(int argc, char** argv, const char* title,
-                   const TestCase* tests, size_t test_count);
+                   const TestCase* tests, size_t test_count,
+                   StartupDisplayMode display_mode = StartupDisplayMode::Default);
 
 bool RunSingleProcessVmmTest(const Options& options);
 bool RunDevicePhysicalIpcTest(const Options& options);

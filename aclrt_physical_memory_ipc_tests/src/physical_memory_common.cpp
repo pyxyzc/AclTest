@@ -1,9 +1,14 @@
 #include "physical_memory_common.h"
+#include "console_utils.h"
 #include "physical_memory_utils.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 
 namespace acltest {
@@ -24,6 +29,117 @@ void PrintUsage(const char* program)
         << "  --share-type default       V2 AI Server local handle. Default.\n"
         << "  --share-type fabric        V2 fabric handle for cross AI Server capable systems.\n"
         << "  --help                     Show this help.\n";
+}
+
+std::string FormatOptions(const Options& options)
+{
+    std::ostringstream out;
+    out << "  device=" << options.device << "\n";
+    out << "  host_numa=" << options.host_numa << "\n";
+    out << "  requested_size=" << options.requested_size << "\n";
+    out << "  pid_validation="
+        << (options.disable_pid_validation ? "disabled" : "enabled") << "\n";
+    out << "  requested_share_api="
+        << (options.force_v1 ? "V1" : "V2 if available") << "\n";
+    out << "  share_type="
+        << (options.share_kind == ShareKind::Fabric ? "fabric" : "default") << "\n";
+    out << "  build_has_v2_share_api="
+        << (ACLTEST_HAS_V2_SHARE_API ? "yes" : "no") << "\n";
+    out << "  build_has_fabric_share_type="
+        << (ACLTEST_HAS_FABRIC_SHARE_TYPE ? "yes" : "no");
+    return out.str();
+}
+
+std::string ToLower(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+bool Contains(const std::string& value, const std::string& needle)
+{
+    return value.find(needle) != std::string::npos;
+}
+
+std::string GetSocName()
+{
+    const char* soc_name = aclrtGetSocName();
+    if (soc_name == nullptr || soc_name[0] == '\0') {
+        return "unknown";
+    }
+    return soc_name;
+}
+
+std::string DetectAscendFamily(const std::string& soc_name)
+{
+    const std::string lower = ToLower(soc_name);
+    if (Contains(lower, "a3") || Contains(lower, "910_93") ||
+        Contains(lower, "910_95")) {
+        return "Ascend A3";
+    }
+    if (Contains(lower, "a2") || Contains(lower, "910b")) {
+        return "Ascend A2";
+    }
+    if (Contains(lower, "a5") || Contains(lower, "950") ||
+        Contains(lower, "cloud_v5") || Contains(lower, "cloudv5")) {
+        return "Ascend A5";
+    }
+    return "unknown";
+}
+
+std::string GetCannVersion()
+{
+#if ACLTEST_HAS_ACLSYS_GET_VERSION_STR
+    auto try_get_version = [](char* pkg_name) -> std::string {
+        char version_str[ACL_PKG_VERSION_MAX_SIZE] = {0};
+        const aclError ret = aclsysGetVersionStr(pkg_name, version_str);
+        if (ret == ACL_SUCCESS && version_str[0] != '\0') {
+            return version_str;
+        }
+        return {};
+    };
+
+    char cann_pkg_name[] = "CANN";
+    std::string version = try_get_version(cann_pkg_name);
+    if (!version.empty()) {
+        return version;
+    }
+
+    char runtime_pkg_name[] = "runtime";
+    version = try_get_version(runtime_pkg_name);
+    if (!version.empty()) {
+        return version;
+    }
+#endif
+
+    int32_t major_version = 0;
+    int32_t minor_version = 0;
+    int32_t patch_version = 0;
+    const aclError ret =
+        aclrtGetVersion(&major_version, &minor_version, &patch_version);
+    if (ret == ACL_SUCCESS) {
+        std::ostringstream out;
+        out << "aclrt_interface_version=" << major_version << "." << minor_version
+            << "." << patch_version;
+        return out.str();
+    }
+    return "unknown";
+}
+
+void PrintSingleProcessBanner(const char* title, const Options& options)
+{
+    const std::string soc_name = GetSocName();
+    std::ostringstream env;
+    env << title << "\n";
+    env << "  ascend_family=" << DetectAscendFamily(soc_name) << "\n";
+    env << "  soc_name=" << soc_name << "\n";
+    env << "  cann_version=" << GetCannVersion();
+
+    PrintRed(env.str());
+    std::cout << "\n";
+    PrintBlue(FormatOptions(options));
+    std::cout << "\n";
 }
 
 bool ParseInt(const char* text, int* out)
@@ -129,25 +245,14 @@ bool ValidateDevice(const Options& options)
 
 void PrintOptions(const Options& options)
 {
-    std::cout << "  device=" << options.device << "\n";
-    std::cout << "  host_numa=" << options.host_numa << "\n";
-    std::cout << "  requested_size=" << options.requested_size << "\n";
-    std::cout << "  pid_validation="
-              << (options.disable_pid_validation ? "disabled" : "enabled") << "\n";
-    std::cout << "  requested_share_api="
-              << (options.force_v1 ? "V1" : "V2 if available") << "\n";
-    std::cout << "  share_type="
-              << (options.share_kind == ShareKind::Fabric ? "fabric" : "default") << "\n";
-    std::cout << "  build_has_v2_share_api="
-              << (ACLTEST_HAS_V2_SHARE_API ? "yes" : "no") << "\n";
-    std::cout << "  build_has_fabric_share_type="
-              << (ACLTEST_HAS_FABRIC_SHARE_TYPE ? "yes" : "no") << "\n";
+    std::cout << FormatOptions(options) << "\n";
 }
 
 }  // namespace
 
 int RunTestProgram(int argc, char** argv, const char* title,
-                   const TestCase* tests, size_t test_count)
+                   const TestCase* tests, size_t test_count,
+                   StartupDisplayMode display_mode)
 {
     Options options;
     if (!ParseArgs(argc, argv, &options)) {
@@ -155,8 +260,12 @@ int RunTestProgram(int argc, char** argv, const char* title,
         return 2;
     }
 
-    std::cout << title << "\n";
-    PrintOptions(options);
+    if (display_mode == StartupDisplayMode::SingleProcessBanner) {
+        PrintSingleProcessBanner(title, options);
+    } else {
+        std::cout << title << "\n";
+        PrintOptions(options);
+    }
 
     if (!ValidateDevice(options)) {
         return 1;

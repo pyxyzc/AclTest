@@ -91,6 +91,19 @@ int main()
     return 0;
 }
 " ACLTEST_HAS_FABRIC_SHARE_TYPE)
+
+check_cxx_source_compiles("
+#include <acl/acl.h>
+int main()
+{
+    using VersionFn = decltype(&aclsysGetVersionStr);
+    VersionFn version_fn = nullptr;
+    char version_str[ACL_PKG_VERSION_MAX_SIZE] = {0};
+    (void)version_fn;
+    (void)version_str;
+    return 0;
+}
+" ACLTEST_HAS_ACLSYS_GET_VERSION_STR)
 unset(CMAKE_REQUIRED_INCLUDES)
 
 add_library(physical_memory_probe_common STATIC
@@ -130,6 +143,14 @@ else()
         ACLTEST_HAS_V2_SHARE_API=0)
 endif()
 
+if(ACLTEST_HAS_ACLSYS_GET_VERSION_STR)
+    target_compile_definitions(physical_memory_probe_common PUBLIC
+        ACLTEST_HAS_ACLSYS_GET_VERSION_STR=1)
+else()
+    target_compile_definitions(physical_memory_probe_common PUBLIC
+        ACLTEST_HAS_ACLSYS_GET_VERSION_STR=0)
+endif()
+
 function(add_physical_memory_probe target source)
     add_executable(${target} ${source})
     target_link_libraries(${target} PRIVATE physical_memory_probe_common)
@@ -148,3 +169,4 @@ message(STATUS "ACL include dir: ${ACL_INCLUDE_DIR}")
 message(STATUS "AscendCL library: ${ASCENDCL_LIBRARY}")
 message(STATUS "V2 shareable handle API: ${ACLTEST_HAS_V2_SHARE_API}")
 message(STATUS "Fabric share handle type: ${ACLTEST_HAS_FABRIC_SHARE_TYPE}")
+message(STATUS "CANN version string API: ${ACLTEST_HAS_ACLSYS_GET_VERSION_STR}")
