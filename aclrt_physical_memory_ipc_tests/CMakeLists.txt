@@ -98,6 +98,9 @@ add_library(physical_memory_probe_common STATIC
     src/physical_memory_utils.cpp
     src/physical_memory_single_process.cpp
     src/physical_memory_ipc.cpp
+    src/physical_memory_ipc_common.cpp
+    src/physical_memory_ipc_single_mapping.cpp
+    src/physical_memory_ipc_va_to_va.cpp
 )
 
 target_include_directories(physical_memory_probe_common PUBLIC
