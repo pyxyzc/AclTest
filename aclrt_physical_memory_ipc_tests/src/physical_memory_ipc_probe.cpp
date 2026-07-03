@@ -6,7 +6,8 @@ int main(int argc, char** argv)
         {"single-process VMM", acltest::RunSingleProcessVmmTest},
         {"device physical memory IPC", acltest::RunDevicePhysicalIpcTest},
         {"host physical memory IPC", acltest::RunHostPhysicalIpcTest},
+        {"device-host physical memory IPC", acltest::RunDeviceHostPhysicalIpcTest},
     };
     return acltest::RunTestProgram(argc, argv, "aclrt physical memory IPC probe",
-                                   tests, 3);
+                                   tests, 4);
 }

@@ -7,7 +7,6 @@
 #include <cstring>
 #include <iostream>
 #include <string>
-#include <vector>
 
 #ifndef ACL_RT_VMM_EXPORT_FLAG_DEFAULT
 #define ACL_RT_VMM_EXPORT_FLAG_DEFAULT 0x0UL
@@ -173,29 +172,6 @@ void FillResult(ChildResult* result, bool ok, aclError ret,
     result->ret = static_cast<int32_t>(ret);
     std::snprintf(result->message, sizeof(result->message), "%s", message.c_str());
 }
-
-struct DeviceAllocation {
-    void* ptr = nullptr;
-    size_t size = 0;
-    bool allocated = false;
-
-    bool Allocate(size_t bytes)
-    {
-        size = bytes;
-        const aclError ret = aclrtMalloc(&ptr, size, ACL_MEM_MALLOC_HUGE_FIRST);
-        allocated = (ret == ACL_SUCCESS);
-        return LogAcl("aclrtMalloc(device ptr)", ret);
-    }
-
-    void Cleanup()
-    {
-        if (allocated && ptr != nullptr) {
-            (void)LogAcl("cleanup aclrtFree(device ptr)", aclrtFree(ptr));
-            ptr = nullptr;
-            allocated = false;
-        }
-    }
-};
 
 }  // namespace
 
@@ -369,9 +345,13 @@ bool ImportAndMapSharedHandle(const ShareMsg& share_msg, size_t index,
         return false;
     }
 
+    const uint64_t map_size = share_msg.handle_aligned_sizes[index] != 0U
+                                  ? share_msg.handle_aligned_sizes[index]
+                                  : share_msg.aligned_size;
+
     std::cout << "  import handle[" << index << "] for " << config.name
               << ", share_msg_device=" << share_msg.device
-              << ", aligned_size=" << share_msg.aligned_size
+              << ", aligned_size=" << map_size
               << ", test_size=" << share_msg.test_size << "\n";
     PrintSharedHandleBlob("received share blob", share_msg.handles[index]);
     aclrtDrvMemHandle imported = nullptr;
@@ -381,7 +361,7 @@ bool ImportAndMapSharedHandle(const ShareMsg& share_msg, size_t index,
     }
 
     mapping->owns_handle = true;
-    if (!mapping->ReserveMapAndSetAccess(imported, share_msg.aligned_size,
+    if (!mapping->ReserveMapAndSetAccess(imported, static_cast<size_t>(map_size),
                                          config.access_location)) {
         mapping->Cleanup();
         if (failure_ret != nullptr) {
@@ -392,86 +372,7 @@ bool ImportAndMapSharedHandle(const ShareMsg& share_msg, size_t index,
     return true;
 }
 
-bool RunImportedHostToDeviceProbe(const ShareMsg& share_msg,
-                                  const PhysicalMapping& host_mapping,
-                                  uint32_t expected_seed,
-                                  const std::string& label_prefix)
-{
-    std::cout << "  " << label_prefix
-              << " imported host VA -> device ptr H2D probe\n";
-
-    Options options;
-    options.device = share_msg.device;
-    options.requested_size = static_cast<size_t>(share_msg.test_size);
-
-    DeviceAllocation device;
-    bool ok = device.Allocate(options.requested_size);
-    std::vector<uint8_t> actual(options.requested_size);
-    if (ok) {
-        ok = CopyWithKind(
-                 device.ptr, device.size, host_mapping.virt, actual.size(),
-                 ACL_MEMCPY_HOST_TO_DEVICE,
-                 label_prefix + " aclrtMemcpy(H2D imported host VA to device ptr)") &&
-             CopyWithKind(
-                 actual.data(), actual.size(), device.ptr, actual.size(),
-                 ACL_MEMCPY_DEVICE_TO_HOST,
-                 label_prefix + " aclrtMemcpy(D2H imported host H2D result)") &&
-             VerifyPattern(actual, expected_seed,
-                           label_prefix + " imported host H2D pattern");
-    }
-
-    device.Cleanup();
-    return ok;
-}
-
-bool RunDeviceToImportedHostProbe(const ShareMsg& share_msg,
-                                  PhysicalMapping* host_mapping,
-                                  uint32_t seed,
-                                  const std::string& label_prefix)
-{
-    std::cout << "  " << label_prefix
-              << " device ptr -> imported host VA D2H probe\n";
-
-    Options options;
-    options.device = share_msg.device;
-    options.requested_size = static_cast<size_t>(share_msg.test_size);
-
-    DeviceAllocation device;
-    bool ok = device.Allocate(options.requested_size);
-    if (ok) {
-        const auto expected = MakePattern(options.requested_size, seed);
-        const auto clear = MakePattern(options.requested_size, seed ^ 0xffU);
-        std::vector<uint8_t> actual(options.requested_size);
-
-        ok = CopyWithKind(
-                 device.ptr, device.size, expected.data(), expected.size(),
-                 ACL_MEMCPY_HOST_TO_DEVICE,
-                 label_prefix + " aclrtMemcpy(H2D device ptr source)") &&
-             CopyWithKind(
-                 host_mapping->virt, host_mapping->size, device.ptr,
-                 expected.size(), ACL_MEMCPY_DEVICE_TO_HOST,
-                 label_prefix + " aclrtMemcpy(D2H device ptr to imported host VA)") &&
-             CopyWithKind(
-                 device.ptr, device.size, clear.data(), clear.size(),
-                 ACL_MEMCPY_HOST_TO_DEVICE,
-                 label_prefix + " aclrtMemcpy(H2D clear device ptr)") &&
-             CopyWithKind(
-                 device.ptr, device.size, host_mapping->virt, expected.size(),
-                 ACL_MEMCPY_HOST_TO_DEVICE,
-                 label_prefix + " aclrtMemcpy(H2D imported host VA roundtrip)") &&
-             CopyWithKind(
-                 actual.data(), actual.size(), device.ptr, actual.size(),
-                 ACL_MEMCPY_DEVICE_TO_HOST,
-                 label_prefix + " aclrtMemcpy(D2H imported host roundtrip result)") &&
-             VerifyPattern(actual, seed,
-                           label_prefix + " imported host D2H/H2D roundtrip pattern");
-    }
-
-    device.Cleanup();
-    return ok;
-}
-
-int RunIpcChild(int read_fd, int write_fd, const PhysicalMemoryConfig& config)
+int RunIpcChild(int read_fd, int write_fd)
 {
     std::cout << "\n[child] started, os_pid=" << getpid() << "\n";
 
@@ -518,15 +419,12 @@ int RunIpcChild(int read_fd, int write_fd, const PhysicalMemoryConfig& config)
         return 1;
     }
 
-    if (share_msg.handle_count == 1U) {
-        return RunSingleMappingIpcChild(write_fd, share_msg, config);
-    }
-    if (share_msg.handle_count == 2U) {
-        return RunVaToVaIpcChild(write_fd, share_msg, config);
+    if (share_msg.test_kind == static_cast<uint32_t>(IpcTestKind::CopyDirection)) {
+        return RunIpcCopyDirectionChild(write_fd, share_msg);
     }
 
     SendChildResult(write_fd, false, ACL_ERROR_RT_PARAM_INVALID,
-                    "child received unsupported handle count");
+                    "child received unsupported IPC test kind");
     return 1;
 }
 

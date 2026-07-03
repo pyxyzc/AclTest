@@ -39,5 +39,6 @@ int RunTestProgram(int argc, char** argv, const char* title,
 bool RunSingleProcessVmmTest(const Options& options);
 bool RunDevicePhysicalIpcTest(const Options& options);
 bool RunHostPhysicalIpcTest(const Options& options);
+bool RunDeviceHostPhysicalIpcTest(const Options& options);
 
 }  // namespace acltest
