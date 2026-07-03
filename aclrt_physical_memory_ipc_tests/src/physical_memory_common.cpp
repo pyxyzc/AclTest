@@ -273,7 +273,9 @@ int RunTestProgram(int argc, char** argv, const char* title,
 
     bool ok = true;
     for (size_t i = 0; i < test_count; ++i) {
-        std::cout << "\n== " << tests[i].name << " ==\n";
+        if (display_mode != StartupDisplayMode::SingleProcessBanner) {
+            std::cout << "\n== " << tests[i].name << " ==\n";
+        }
         ok = tests[i].run(options) && ok;
     }
 
